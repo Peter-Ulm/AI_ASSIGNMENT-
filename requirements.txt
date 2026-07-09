@@ -6,14 +6,14 @@ fastapi==0.115.6
 uvicorn[standard]==0.34.0
 pydantic==2.10.4
 python-dotenv==1.0.1
+python-multipart==0.0.20
 
 # HTTP client (backend -> Ollama, tests -> backend, frontend -> backend)
 requests==2.32.5
 
-# Frontend
-# Pinned to a Tornado-based Streamlit: newer 1.5x releases depend on a Starlette
-# version that conflicts with the one FastAPI pins (0.41.3).
-streamlit==1.40.2
+# RAG: vector index + PDF ingestion
+faiss-cpu==1.9.0.post1
+pypdf==5.1.0
 
 # Testing
 pytest==8.3.4

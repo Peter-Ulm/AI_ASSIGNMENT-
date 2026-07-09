@@ -1,122 +1,166 @@
-import { useState, useEffect } from 'react';
-import { Container, Row, Col, Spinner } from 'react-bootstrap';
-import 'bootstrap/dist/css/bootstrap.min.css';
+import { useEffect, useState } from 'react';
 import './App.css';
 
-import { ThemeProvider, useTheme } from './context/ThemeContext';
-import Header from './components/Header';
+import { ThemeProvider } from './context/ThemeContext';
 import Sidebar from './components/Sidebar';
-import QuestionForm from './components/QuestionForm';
-import ConversationHistory from './components/ConversationHistory';
-import { submitQuestion } from './services/api';
-import { ConversationTurn } from './types';
+import ChatPane from './components/ChatPane';
+import KnowledgeBasePage from './components/KnowledgeBasePage';
+import SettingsPage from './components/SettingsPage';
+import SourcesPanel from './components/SourcesPanel';
+import { sendChat } from './services/api';
+import { AppView, ChatMessage, ChatSession } from './types';
 
-// This component uses the theme context
+const SESSIONS_KEY = 'chat_sessions_v1';
+const TEMPERATURE_KEY = 'chat_temperature_v1';
+// Lower than a typical default (0.7) so the assistant stays focused and
+// consistent rather than rambling - this is a factual support bot, not a
+// creative-writing one. Adjustable on the Settings page.
+const DEFAULT_TEMPERATURE = 0.3;
+
+function makeTitle(content: string): string {
+  const flat = content.trim().replace(/\s+/g, ' ');
+  return flat.length > 40 ? `${flat.slice(0, 40)}…` : flat;
+}
+
 function AppContent() {
-  const [history, setHistory] = useState<ConversationTurn[]>([]);
-  const [temperature, setTemperature] = useState(0.7);
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [view, setView] = useState<AppView>('chat');
   const [loading, setLoading] = useState(false);
-  const { theme } = useTheme();
+  const [detailsMessage, setDetailsMessage] = useState<ChatMessage | null>(null);
+  const [temperature, setTemperature] = useState(DEFAULT_TEMPERATURE);
 
   useEffect(() => {
-    const saved = localStorage.getItem('conversationHistory');
+    const saved = localStorage.getItem(SESSIONS_KEY);
     if (saved) {
       try {
-        setHistory(JSON.parse(saved));
+        const parsed = JSON.parse(saved);
+        setSessions(parsed.sessions ?? []);
+        setActiveId(parsed.activeId ?? null);
       } catch (e) {
-        console.error('Failed to load history:', e);
+        console.error('Failed to load chat sessions:', e);
       }
+    }
+
+    const savedTemperature = localStorage.getItem(TEMPERATURE_KEY);
+    if (savedTemperature) {
+      const parsed = parseFloat(savedTemperature);
+      if (!Number.isNaN(parsed)) setTemperature(parsed);
     }
   }, []);
 
   useEffect(() => {
-    localStorage.setItem('conversationHistory', JSON.stringify(history));
-  }, [history]);
+    localStorage.setItem(SESSIONS_KEY, JSON.stringify({ sessions, activeId }));
+  }, [sessions, activeId]);
 
-  const handleSubmit = async (question: string) => {
-    setLoading(true);
-    try {
-      const result = await submitQuestion(question, temperature);
-      const newTurn: ConversationTurn = {
-        question: question.trim(),
-        answer: result.answer,
-        meta: result,
+  useEffect(() => {
+    localStorage.setItem(TEMPERATURE_KEY, String(temperature));
+  }, [temperature]);
+
+  const activeMessages = sessions.find((s) => s.id === activeId)?.messages ?? [];
+
+  const handleSend = async (content: string) => {
+    const userMessage: ChatMessage = { role: 'user', content };
+
+    let sessionId = activeId;
+    let historyForRequest: ChatMessage[];
+
+    if (sessionId === null) {
+      sessionId = crypto.randomUUID();
+      historyForRequest = [userMessage];
+      const newSession: ChatSession = {
+        id: sessionId,
+        title: makeTitle(content),
+        messages: historyForRequest,
+        updatedAt: Date.now(),
       };
-      setHistory(prev => [...prev, newTurn]);
+      setSessions((prev) => [...prev, newSession]);
+      setActiveId(sessionId);
+    } else {
+      historyForRequest = [...activeMessages, userMessage];
+      const id = sessionId;
+      setSessions((prev) =>
+        prev.map((s) => (s.id === id ? { ...s, messages: historyForRequest, updatedAt: Date.now() } : s)),
+      );
+    }
+
+    setLoading(true);
+    const id = sessionId;
+    try {
+      const result = await sendChat(historyForRequest, temperature);
+      const assistantMessage: ChatMessage = {
+        role: 'assistant',
+        content: result.answer,
+        usedKb: result.used_kb,
+        sources: result.sources,
+        model: result.model,
+        tokensUsed: result.tokens_used,
+        generationTime: result.generation_time,
+      };
+      setSessions((prev) =>
+        prev.map((s) =>
+          s.id === id ? { ...s, messages: [...s.messages, assistantMessage], updatedAt: Date.now() } : s,
+        ),
+      );
     } catch (error) {
-      console.error('Error submitting question:', error);
-      throw error;
+      const errorMessage: ChatMessage = {
+        role: 'assistant',
+        content: error instanceof Error ? error.message : 'Something went wrong.',
+        isError: true,
+      };
+      setSessions((prev) =>
+        prev.map((s) => (s.id === id ? { ...s, messages: [...s.messages, errorMessage] } : s)),
+      );
     } finally {
       setLoading(false);
     }
   };
 
-  const handleFeedback = (index: number, rating: string) => {
-    console.log(`Feedback for turn ${index}: ${rating}`);
+  const handleNewChat = () => {
+    setActiveId(null);
+    setView('chat');
+  };
+
+  const handleSelectSession = (id: string) => {
+    setActiveId(id);
+    setView('chat');
+  };
+
+  const handleDeleteSession = (id: string) => {
+    setSessions((prev) => prev.filter((s) => s.id !== id));
+    if (id === activeId) setActiveId(null);
   };
 
   return (
-    <div 
-      className="App" 
-      style={{ 
-        backgroundColor: theme === 'dark' ? '#0f0f1a' : '#f0f2f5',
-        minHeight: '100vh',
-        transition: 'background-color 0.3s ease'
-      }}
-    >
-      <Header />
-      
-      <Container className="py-4">
-        <Row>
-          <Col lg={3} className="mb-4">
-            <div 
-              className="p-3 rounded-4 shadow-sm"
-              style={{
-                backgroundColor: theme === 'dark' ? '#1a1a2e' : '#ffffff',
-                border: theme === 'dark' ? '1px solid rgba(255,255,255,0.05)' : '1px solid rgba(0,0,0,0.05)',
-                position: 'sticky',
-                top: '20px',
-                transition: 'background-color 0.3s ease'
-              }}
-            >
-              <Sidebar 
-                temperature={temperature} 
-                onTemperatureChange={setTemperature} 
-              />
-            </div>
-          </Col>
-          
-          <Col lg={9}>
-            <div 
-              className="p-4 rounded-4 shadow-sm"
-              style={{
-                backgroundColor: theme === 'dark' ? '#1a1a2e' : '#ffffff',
-                border: theme === 'dark' ? '1px solid rgba(255,255,255,0.05)' : '1px solid rgba(0,0,0,0.05)',
-                transition: 'background-color 0.3s ease'
-              }}
-            >
-              <QuestionForm onSubmit={handleSubmit} loading={loading} />
-              
-              {loading && (
-                <div className="text-center my-4">
-                  <Spinner animation="border" variant="primary" />
-                  <p className="mt-2 text-muted">Processing your question...</p>
-                </div>
-              )}
-              
-              <ConversationHistory 
-                history={history} 
-                onFeedback={handleFeedback} 
-              />
-            </div>
-          </Col>
-        </Row>
-      </Container>
+    <div className="app-shell">
+      <Sidebar
+        sessions={sessions}
+        activeId={activeId}
+        view={view}
+        onNewChat={handleNewChat}
+        onSelectSession={handleSelectSession}
+        onDeleteSession={handleDeleteSession}
+        onNavigate={setView}
+      />
+
+      {view === 'chat' && (
+        <ChatPane
+          messages={activeMessages}
+          loading={loading}
+          onSend={handleSend}
+          onShowDetails={setDetailsMessage}
+        />
+      )}
+      {view === 'knowledge-base' && <KnowledgeBasePage />}
+      {view === 'settings' && (
+        <SettingsPage temperature={temperature} onTemperatureChange={setTemperature} />
+      )}
+
+      <SourcesPanel message={detailsMessage} onClose={() => setDetailsMessage(null)} />
     </div>
   );
 }
 
-// Main App component wraps everything in ThemeProvider
 function App() {
   return (
     <ThemeProvider>

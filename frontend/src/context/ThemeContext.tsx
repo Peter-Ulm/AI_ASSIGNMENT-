@@ -32,9 +32,7 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
 
   useEffect(() => {
     localStorage.setItem('theme', theme);
-    document.documentElement.setAttribute('data-bs-theme', theme);
-    // Also update the body background for smoother transitions
-    document.body.style.backgroundColor = theme === 'dark' ? '#0f0f1a' : '#f0f2f5';
+    document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
 
   const toggleTheme = () => {

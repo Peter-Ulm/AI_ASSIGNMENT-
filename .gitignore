@@ -11,6 +11,7 @@ env/
 # Runtime artifacts
 backend/logs/*.log
 backend/feedback.jsonl
+backend/data/
 
 # Scratch
 _assignment_extracted.txt

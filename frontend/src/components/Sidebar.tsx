@@ -1,106 +1,118 @@
 import React, { useEffect, useState } from 'react';
-import { Alert, Container, Form, Spinner, Badge } from 'react-bootstrap';
-import { FaServer, FaSlidersH } from 'react-icons/fa';
+import {
+  FaPlus,
+  FaSun,
+  FaMoon,
+  FaGraduationCap,
+  FaBook,
+  FaCog,
+  FaTrash,
+  FaComment,
+} from 'react-icons/fa';
 import { getHealth } from '../services/api';
 import { useTheme } from '../context/ThemeContext';
+import { AppView, ChatSession, HealthResponse } from '../types';
 
 interface SidebarProps {
-  temperature: number;
-  onTemperatureChange: (value: number) => void;
+  sessions: ChatSession[];
+  activeId: string | null;
+  view: AppView;
+  onNewChat: () => void;
+  onSelectSession: (id: string) => void;
+  onDeleteSession: (id: string) => void;
+  onNavigate: (view: AppView) => void;
 }
 
-const Sidebar: React.FC<SidebarProps> = ({ temperature, onTemperatureChange }) => {
-  const [health, setHealth] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
-  const { theme } = useTheme();
+const Sidebar: React.FC<SidebarProps> = ({
+  sessions,
+  activeId,
+  view,
+  onNewChat,
+  onSelectSession,
+  onDeleteSession,
+  onNavigate,
+}) => {
+  const [health, setHealth] = useState<HealthResponse | null>(null);
+  const { theme, toggleTheme } = useTheme();
 
   useEffect(() => {
-    const checkHealth = async () => {
-      const data = await getHealth();
-      setHealth(data);
-      setLoading(false);
-    };
-    checkHealth();
+    getHealth().then(setHealth);
   }, []);
 
+  const statusClass = !health ? 'offline' : health.status === 'ok' ? 'ok' : 'degraded';
+  const statusLabel = !health ? 'Backend offline' : health.status === 'ok' ? 'Online' : 'Model not ready';
+
+  const sortedSessions = [...sessions].sort((a, b) => b.updatedAt - a.updatedAt);
+
   return (
-    <Container className="p-0">
-      <div className="mb-4">
-        <h5 className="d-flex align-items-center gap-2 mb-3">
-          <FaServer size={18} /> System Status
-        </h5>
-        {loading ? (
-          <div className="text-center py-3">
-            <Spinner animation="border" size="sm" variant="primary" />
-            <span className="ms-2">Checking backend...</span>
-          </div>
-        ) : (
-          <div>
-            {!health ? (
-              <Alert variant="danger" className="rounded-3">
-                <strong>Offline</strong>
-                <br />
-                <small>Start backend with <code>uvicorn main:app</code></small>
-              </Alert>
-            ) : health.status === 'ok' ? (
-              <Alert variant="success" className="rounded-3">
-                <div className="d-flex align-items-center gap-2">
-                  <span className="badge bg-success rounded-pill px-3 py-2">● Online</span>
-                  <span className="ms-auto">
-                    <Badge bg="info" pill className="px-3 py-2">
-                      {health.model}
-                    </Badge>
-                  </span>
-                </div>
-              </Alert>
-            ) : (
-              <Alert variant="warning" className="rounded-3">
-                <strong>Model not ready</strong>
-                <br />
-                <small>Is Ollama running?</small>
-              </Alert>
-            )}
-          </div>
-        )}
+    <aside className="sidebar">
+      <div className="brand">
+        <FaGraduationCap size={20} />
+        <span>Student Support</span>
       </div>
 
-      <div className="mb-3">
-        <h5 className="d-flex align-items-center gap-2 mb-3">
-          <FaSlidersH size={18} /> Settings
-        </h5>
-        <Form.Group>
-          <div className="d-flex justify-content-between align-items-center mb-2">
-            <Form.Label className="mb-0 fw-medium">Temperature</Form.Label>
-            <Badge 
-              bg={theme === 'dark' ? 'secondary' : 'primary'} 
-              pill 
-              className="px-3 py-2"
-              style={{ fontSize: '0.85rem' }}
-            >
-              {temperature.toFixed(1)}
-            </Badge>
-          </div>
-          <Form.Range
-            min={0}
-            max={1}
-            step={0.1}
-            value={temperature}
-            onChange={(e) => onTemperatureChange(parseFloat(e.target.value))}
-            className="mb-2"
-            style={{
-              /*background: theme === 'dark' 
-                ? 'linear-gradient(to right, #495a4e, #2a6e37)' 
-                : 'linear-gradient(to right, #ddd, #11d26b)'
-            */}}
-          />
-          <div className="d-flex justify-content-between small text-muted">
-            <span>Precise</span>
-            <span>Balanced</span>
-            <span>Creative</span>
-          </div>
-        </Form.Group>
+      <button className="new-chat-btn" onClick={onNewChat}>
+        <FaPlus size={12} /> New chat
+      </button>
+
+      <div className="sidebar-section">
+        <div className="sidebar-label">Chats</div>
+        <div className="chat-history-list">
+          {sortedSessions.length === 0 ? (
+            <div className="kb-empty">No conversations yet.</div>
+          ) : (
+            sortedSessions.map((session) => (
+              <div
+                key={session.id}
+                className={`chat-history-item ${view === 'chat' && session.id === activeId ? 'active' : ''}`}
+                onClick={() => onSelectSession(session.id)}
+              >
+                <FaComment size={11} className="chat-history-icon" />
+                <span className="chat-history-title" title={session.title}>
+                  {session.title}
+                </span>
+                <button
+                  className="chat-history-delete"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onDeleteSession(session.id);
+                  }}
+                  aria-label="Delete chat"
+                >
+                  <FaTrash size={10} />
+                </button>
+              </div>
+            ))
+          )}
+        </div>
       </div>
-    </Container>
+
+      <div className="sidebar-section">
+        <button
+          className={`nav-item ${view === 'knowledge-base' ? 'active' : ''}`}
+          onClick={() => onNavigate('knowledge-base')}
+        >
+          <FaBook size={13} /> Knowledge base
+        </button>
+        <button
+          className={`nav-item ${view === 'settings' ? 'active' : ''}`}
+          onClick={() => onNavigate('settings')}
+        >
+          <FaCog size={13} /> Settings
+        </button>
+      </div>
+
+      <div className="sidebar-footer">
+        <div className="status-row">
+          <span className={`status-dot ${statusClass}`} />
+          <span>{statusLabel}{health && ` · ${health.model}`}</span>
+        </div>
+        <button className="theme-toggle-btn" onClick={toggleTheme}>
+          {theme === 'dark' ? <FaSun size={13} /> : <FaMoon size={13} />}
+          {theme === 'dark' ? 'Light mode' : 'Dark mode'}
+        </button>
+      </div>
+    </aside>
   );
 };
 

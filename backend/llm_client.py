@@ -5,8 +5,8 @@ The rest of the application talks to the model only through this module, so
 swapping the model or even the provider is a configuration change, not a code
 change. The client uses Ollama's native HTTP API:
 
-    GET  /api/tags      - list installed models (used for the health check)
-    POST /api/generate  - run a single-shot completion
+    GET  /api/tags   - list installed models (used for the health check)
+    POST /api/chat   - conversational completion, optionally with tools
 
 All network failures are converted into a small set of explicit exceptions so
 the API layer can return clear, user-facing error messages (Task 7).
@@ -68,16 +68,23 @@ def check_health() -> dict[str, Any]:
         }
 
 
-def generate(prompt: str, temperature: float | None = None) -> dict[str, Any]:
-    """Send a prompt to the local model and return the answer plus metadata.
+def chat(
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None = None,
+    temperature: float | None = None,
+) -> dict[str, Any]:
+    """Send a conversation (optionally with tool definitions) to the local model.
 
     Args:
-        prompt:      The full prompt (system instructions + context + question).
+        messages:    Chat history, each a {"role", "content"} dict (roles:
+                     system, user, assistant, tool).
+        tools:       Optional OpenAI-style tool definitions the model may call.
         temperature: Sampling temperature; falls back to the configured default.
 
     Returns:
-        dict with keys: answer (str), tokens_used (int), generation_time (float
-        seconds), model (str).
+        dict with keys: message (the raw assistant message, which may contain
+        "tool_calls" instead of/alongside "content"), tokens_used (int),
+        generation_time (float seconds), model (str).
 
     Raises:
         LLMUnavailableError: the Ollama server is unreachable.
@@ -87,17 +94,19 @@ def generate(prompt: str, temperature: float | None = None) -> dict[str, Any]:
     if temperature is None:
         temperature = settings.DEFAULT_TEMPERATURE
 
-    body = {
+    body: dict[str, Any] = {
         "model": settings.OLLAMA_MODEL_NAME,
-        "prompt": prompt,
+        "messages": messages,
         "stream": False,
         "options": {"temperature": temperature},
     }
+    if tools:
+        body["tools"] = tools
 
     start = time.perf_counter()
     try:
         response = requests.post(
-            f"{settings.OLLAMA_BASE_URL}/api/generate",
+            f"{settings.OLLAMA_BASE_URL}/api/chat",
             json=body,
             timeout=settings.REQUEST_TIMEOUT_SECONDS,
         )
@@ -117,12 +126,12 @@ def generate(prompt: str, temperature: float | None = None) -> dict[str, Any]:
 
     elapsed = time.perf_counter() - start
     data = response.json()
-    answer = (data.get("response") or "").strip()
-    if not answer:
-        raise LLMError("The model returned an empty answer.")
+    message = data.get("message") or {}
+    if not message.get("content") and not message.get("tool_calls"):
+        raise LLMError("The model returned an empty response.")
 
     return {
-        "answer": answer,
+        "message": message,
         # Ollama reports prompt + completion token counts when available.
         "tokens_used": int(data.get("eval_count", 0) or 0)
         + int(data.get("prompt_eval_count", 0) or 0),

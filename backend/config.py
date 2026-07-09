@@ -37,6 +37,8 @@ class Settings:
     # Default to a model already pulled on the dev machine; change in .env to
     # llama3.2:1b or phi3 for a lighter footprint.
     OLLAMA_MODEL_NAME: str = os.getenv("OLLAMA_MODEL_NAME", "llama3.2:3b")
+    # Small model dedicated to embeddings (RAG). Pulled alongside the chat model.
+    EMBEDDING_MODEL_NAME: str = os.getenv("EMBEDDING_MODEL_NAME", "nomic-embed-text")
 
     # ── Generation defaults ─────────────────────────────────────────────────
     DEFAULT_TEMPERATURE: float = float(os.getenv("DEFAULT_TEMPERATURE", "0.7"))
@@ -58,6 +60,9 @@ class Settings:
     FAQ_FILE: Path = BACKEND_DIR / "university_faq.md"
     # Where user ratings (Good/Average/Poor) are appended.
     FEEDBACK_FILE: Path = BACKEND_DIR / "feedback.jsonl"
+
+    # ── Vector store (FAISS) ─────────────────────────────────────────────────
+    VECTOR_STORE_DIR: Path = BACKEND_DIR / "data"
 
 
 settings = Settings()

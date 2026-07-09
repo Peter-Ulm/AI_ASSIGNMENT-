@@ -1,10 +1,11 @@
 """
-API test script (Task 5).
+API test script.
 
 Tests the running backend over HTTP:
-  - GET  /health         returns a status and model
-  - POST /ask            returns the required fields with a non-empty answer
-  - POST /ask (empty)    is rejected with a 4xx error
+  - GET  /health          returns a status and model
+  - POST /chat            returns the required fields with a non-empty answer
+  - POST /chat (empty)    is rejected with a 4xx error
+  - POST /rag/search      returns a list (empty query rejected)
 
 Run with the backend up:
     python tests/test_api.py          # prints a PASS/FAIL summary
@@ -23,7 +24,7 @@ import pytest
 import requests
 
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
-REQUIRED_FIELDS = ["question", "answer", "tokens_used", "generation_time", "timestamp", "model"]
+REQUIRED_FIELDS = ["answer", "tokens_used", "generation_time", "timestamp", "model", "used_kb", "sources"]
 
 
 def _backend_up() -> bool:
@@ -47,10 +48,10 @@ def test_health():
     assert "status" in data and "model" in data
 
 
-def test_ask_returns_required_fields():
+def test_chat_returns_required_fields():
     resp = requests.post(
-        f"{API_BASE_URL}/ask",
-        json={"question": "How do I register for courses?", "temperature": 0.2},
+        f"{API_BASE_URL}/chat",
+        json={"messages": [{"role": "user", "content": "How do I register for courses?"}], "temperature": 0.2},
         timeout=180,
     )
     assert resp.status_code == 200, resp.text
@@ -60,13 +61,23 @@ def test_ask_returns_required_fields():
     assert len(data["answer"]) > 0, "answer is empty"
 
 
-def test_empty_question_is_rejected():
+def test_empty_message_is_rejected():
     resp = requests.post(
-        f"{API_BASE_URL}/ask",
-        json={"question": "   ", "temperature": 0.2},
+        f"{API_BASE_URL}/chat",
+        json={"messages": [{"role": "user", "content": "   "}], "temperature": 0.2},
         timeout=30,
     )
-    assert resp.status_code >= 400, "empty question should be rejected"
+    assert resp.status_code >= 400, "empty message should be rejected"
+
+
+def test_rag_search_returns_results():
+    resp = requests.post(
+        f"{API_BASE_URL}/rag/search",
+        json={"query": "library hours", "k": 3},
+        timeout=30,
+    )
+    assert resp.status_code == 200, resp.text
+    assert isinstance(resp.json(), list)
 
 
 def _run_as_script() -> int:
@@ -77,8 +88,9 @@ def _run_as_script() -> int:
 
     checks = [
         ("GET /health", test_health),
-        ("POST /ask (valid)", test_ask_returns_required_fields),
-        ("POST /ask (empty -> rejected)", test_empty_question_is_rejected),
+        ("POST /chat (valid)", test_chat_returns_required_fields),
+        ("POST /chat (empty -> rejected)", test_empty_message_is_rejected),
+        ("POST /rag/search", test_rag_search_returns_results),
     ]
     failures = 0
     for name, fn in checks:

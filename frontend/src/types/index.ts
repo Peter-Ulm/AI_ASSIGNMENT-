@@ -1,33 +1,61 @@
 export interface HealthResponse {
   status: string;
-  model?: string;
+  model: string;
+  ollama_reachable: boolean;
+  model_installed: boolean;
 }
 
-export interface AskResponse {
+export type ChatRole = 'user' | 'assistant';
+
+export interface RagSearchResult {
+  text: string;
+  source: string;
+  heading: string;
+  score: number;
+}
+
+export interface ChatMessage {
+  role: ChatRole;
+  content: string;
+  // Present on assistant messages only.
+  usedKb?: boolean;
+  sources?: RagSearchResult[];
+  model?: string;
+  tokensUsed?: number;
+  generationTime?: number;
+  isError?: boolean;
+}
+
+export interface ChatApiResponse {
   answer: string;
-  model: string;
   tokens_used: number;
   generation_time: number;
-  faq_section?: string;
+  timestamp: string;
+  model: string;
+  used_kb: boolean;
+  sources: RagSearchResult[];
 }
 
-export interface AskRequest {
-  question: string;
-  temperature: number;
+export interface RagDocument {
+  source: string;
+  chunks: number;
 }
 
-export interface FeedbackRequest {
-  question: string;
-  answer: string;
-  rating: string;
-}
-
-export interface ConversationTurn {
-  question: string;
-  answer: string;
-  meta: AskResponse;
+export interface RagStatus {
+  chunk_count: number;
+  source_count: number;
+  embedding_model: string;
 }
 
 export interface ApiError {
   detail: string;
 }
+
+export interface ChatSession {
+  id: string;
+  title: string;
+  messages: ChatMessage[];
+  updatedAt: number;
+}
+
+export type AppView = 'chat' | 'knowledge-base' | 'settings';

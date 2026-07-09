@@ -1,65 +1,118 @@
-/* Reset and base styles */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+/* ── Theme variables ────────────────────────────────────────────────────── */
+:root {
+  --bg: #ffffff;
+  --bg-secondary: #f7f6f4;
+  --bg-tertiary: #eeece7;
+  --text: #2d2a26;
+  --text-muted: #6b6659;
+  --border: #e5e2db;
+  --accent: #c96442;
+  --accent-hover: #b3542f;
+  --accent-soft: rgba(201, 100, 66, 0.12);
+  --danger: #d33d3d;
+  --success: #3a8c5f;
+  --warning: #b8860b;
+  --radius: 12px;
+  --radius-sm: 8px;
+  --sidebar-width: 280px;
+}
+
+[data-theme='dark'] {
+  --bg: #1a1918;
+  --bg-secondary: #211f1d;
+  --bg-tertiary: #2b2926;
+  --text: #ece8e1;
+  --text-muted: #9c968a;
+  --border: #38352f;
+  --accent: #d97757;
+  --accent-hover: #e08b6d;
+  --accent-soft: rgba(217, 119, 87, 0.16);
+  --danger: #e57373;
+  --success: #6fcf97;
+  --warning: #e0b04f;
+}
+
+/* ── Reset ───────────────────────────────────────────────────────────────── */
 * {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+html,
+body,
+#root {
+  height: 100%;
 }
 
 body {
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+  background-color: var(--bg);
+  color: var(--text);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  transition: background-color 0.3s ease;
+  transition: background-color 0.2s ease, color 0.2s ease;
 }
 
-/* Dark mode base styles */
-[data-bs-theme="dark"] body {
-  background-color: #0f0f1a;
-  color: #e0e0e0;
+button,
+input,
+textarea,
+select {
+  color: inherit;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease, opacity 0.15s ease;
 }
 
-/* Scrollbar styling */
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* ── Scrollbar ───────────────────────────────────────────────────────────── */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 
 ::-webkit-scrollbar-track {
-  background: rgba(102, 126, 234, 0.05);
-  border-radius: 10px;
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: var(--border);
   border-radius: 10px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: linear-gradient(135deg, #764ba2 0%, #667eea 100%);
+  background: var(--text-muted);
 }
 
-/* Dark mode scrollbar */
-[data-bs-theme="dark"] ::-webkit-scrollbar-track {
-  background: rgba(255, 255, 255, 0.05);
-}
-
-/* Smooth transitions for all interactive elements */
-button, a, input, textarea, select {
-  transition: all 0.2s ease;
-}
-
-/* Focus styles for accessibility */
+/* ── Focus / selection ───────────────────────────────────────────────────── */
 :focus-visible {
-  outline: 2px solid #667eea;
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
-/* Selection color */
 ::selection {
-  background: rgba(102, 126, 234, 0.3);
+  background: var(--accent-soft);
   color: inherit;
 }
 
-[data-bs-theme="dark"] ::selection {
-  background: rgba(102, 126, 234, 0.4);
+/* ── Inline code ─────────────────────────────────────────────────────────── */
+code {
+  background-color: var(--bg-tertiary);
+  padding: 0.15rem 0.4rem;
+  border-radius: 6px;
+  font-size: 0.85em;
+}
+
+pre code {
+  display: block;
+  padding: 0.75rem 1rem;
+  overflow-x: auto;
 }
