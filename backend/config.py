@@ -64,5 +64,15 @@ class Settings:
     # ── Vector store (FAISS) ─────────────────────────────────────────────────
     VECTOR_STORE_DIR: Path = BACKEND_DIR / "data"
 
+    # ── Auth ─────────────────────────────────────────────────────────────────
+    DB_FILE: Path = BACKEND_DIR / "data" / "app.db"
+    # Change this for any real deployment - the default is only safe for local use.
+    JWT_SECRET: str = os.getenv("JWT_SECRET", "dev-secret-change-me")
+    JWT_EXPIRE_DAYS: int = int(os.getenv("JWT_EXPIRE_DAYS", "7"))
+    FRONTEND_ORIGIN: str = os.getenv("FRONTEND_ORIGIN", "http://localhost:3000")
+    # Cookies require HTTPS when Secure is set - keep False for local http, flip
+    # to True once the app is served over HTTPS.
+    COOKIE_SECURE: bool = _get_bool("COOKIE_SECURE", False)
+
 
 settings = Settings()

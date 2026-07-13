@@ -8,8 +8,10 @@ import {
   FaCog,
   FaTrash,
   FaComment,
+  FaSignOutAlt,
 } from 'react-icons/fa';
 import { getHealth } from '../services/api';
+import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import { AppView, ChatSession, HealthResponse } from '../types';
 
@@ -34,6 +36,7 @@ const Sidebar: React.FC<SidebarProps> = ({
 }) => {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const { theme, toggleTheme } = useTheme();
+  const { user, logout } = useAuth();
 
   useEffect(() => {
     getHealth().then(setHealth);
@@ -42,7 +45,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   const statusClass = !health ? 'offline' : health.status === 'ok' ? 'ok' : 'degraded';
   const statusLabel = !health ? 'Backend offline' : health.status === 'ok' ? 'Online' : 'Model not ready';
 
-  const sortedSessions = [...sessions].sort((a, b) => b.updatedAt - a.updatedAt);
+  const sortedSessions = [...sessions].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 
   return (
     <aside className="sidebar">
@@ -107,6 +110,14 @@ const Sidebar: React.FC<SidebarProps> = ({
           <span className={`status-dot ${statusClass}`} />
           <span>{statusLabel}{health && ` · ${health.model}`}</span>
         </div>
+        {user && (
+          <div className="user-row">
+            <span className="user-name" title={user.email}>{user.name}</span>
+            <button className="logout-btn" onClick={logout} aria-label="Log out">
+              <FaSignOutAlt size={12} />
+            </button>
+          </div>
+        )}
         <button className="theme-toggle-btn" onClick={toggleTheme}>
           {theme === 'dark' ? <FaSun size={13} /> : <FaMoon size={13} />}
           {theme === 'dark' ? 'Light mode' : 'Dark mode'}

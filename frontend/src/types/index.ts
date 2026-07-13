@@ -27,6 +27,8 @@ export interface ChatMessage {
 }
 
 export interface ChatApiResponse {
+  session_id: string;
+  title: string;
   answer: string;
   tokens_used: number;
   generation_time: number;
@@ -34,6 +36,17 @@ export interface ChatApiResponse {
   model: string;
   used_kb: boolean;
   sources: RagSearchResult[];
+}
+
+export interface StoredMessage {
+  role: ChatRole;
+  content: string;
+  used_kb: boolean;
+  sources: RagSearchResult[];
+  model: string | null;
+  tokens_used: number | null;
+  generation_time: number | null;
+  is_error: boolean;
 }
 
 export interface RagDocument {
@@ -54,8 +67,15 @@ export interface ApiError {
 export interface ChatSession {
   id: string;
   title: string;
-  messages: ChatMessage[];
-  updatedAt: number;
+  updatedAt: string;
 }
 
 export type AppView = 'chat' | 'knowledge-base' | 'settings';
+
+export interface User {
+  id: string;
+  name: string;
+  email: string;
+}
+
+export type AuthView = 'login' | 'signup';

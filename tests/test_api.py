@@ -3,6 +3,7 @@ API test script.
 
 Tests the running backend over HTTP:
   - GET  /health          returns a status and model
+  - POST /auth/signup or /auth/login - gets an authenticated session
   - POST /chat            returns the required fields with a non-empty answer
   - POST /chat (empty)    is rejected with a 4xx error
   - POST /rag/search      returns a list (empty query rejected)
@@ -24,7 +25,15 @@ import pytest
 import requests
 
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
-REQUIRED_FIELDS = ["answer", "tokens_used", "generation_time", "timestamp", "model", "used_kb", "sources"]
+REQUIRED_FIELDS = [
+    "session_id", "title", "answer", "tokens_used", "generation_time",
+    "timestamp", "model", "used_kb", "sources",
+]
+
+# Fixed test account, reused across runs (signup if missing, login otherwise)
+# so this script is idempotent and doesn't accumulate throwaway users.
+TEST_EMAIL = "test-api@example.com"
+TEST_PASSWORD = "test-api-password"
 
 
 def _backend_up() -> bool:
@@ -41,6 +50,24 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+def _authed_session() -> requests.Session:
+    """Log in as the fixed test account, signing it up on first use."""
+    session = requests.Session()
+    resp = session.post(
+        f"{API_BASE_URL}/auth/login",
+        json={"email": TEST_EMAIL, "password": TEST_PASSWORD},
+        timeout=10,
+    )
+    if resp.status_code != 200:
+        resp = session.post(
+            f"{API_BASE_URL}/auth/signup",
+            json={"name": "Test API", "email": TEST_EMAIL, "password": TEST_PASSWORD},
+            timeout=10,
+        )
+        assert resp.status_code == 200, f"could not create test account: {resp.text}"
+    return session
+
+
 def test_health():
     resp = requests.get(f"{API_BASE_URL}/health", timeout=10)
     assert resp.status_code == 200, resp.text
@@ -49,9 +76,10 @@ def test_health():
 
 
 def test_chat_returns_required_fields():
-    resp = requests.post(
+    session = _authed_session()
+    resp = session.post(
         f"{API_BASE_URL}/chat",
-        json={"messages": [{"role": "user", "content": "How do I register for courses?"}], "temperature": 0.2},
+        json={"session_id": None, "message": "How do I register for courses?", "temperature": 0.2},
         timeout=180,
     )
     assert resp.status_code == 200, resp.text
@@ -62,16 +90,27 @@ def test_chat_returns_required_fields():
 
 
 def test_empty_message_is_rejected():
-    resp = requests.post(
+    session = _authed_session()
+    resp = session.post(
         f"{API_BASE_URL}/chat",
-        json={"messages": [{"role": "user", "content": "   "}], "temperature": 0.2},
+        json={"session_id": None, "message": "   ", "temperature": 0.2},
         timeout=30,
     )
     assert resp.status_code >= 400, "empty message should be rejected"
 
 
-def test_rag_search_returns_results():
+def test_chat_requires_auth():
     resp = requests.post(
+        f"{API_BASE_URL}/chat",
+        json={"session_id": None, "message": "Hello", "temperature": 0.2},
+        timeout=30,
+    )
+    assert resp.status_code == 401, "chat without a session cookie should be rejected"
+
+
+def test_rag_search_returns_results():
+    session = _authed_session()
+    resp = session.post(
         f"{API_BASE_URL}/rag/search",
         json={"query": "library hours", "k": 3},
         timeout=30,
@@ -88,6 +127,7 @@ def _run_as_script() -> int:
 
     checks = [
         ("GET /health", test_health),
+        ("POST /chat requires auth", test_chat_requires_auth),
         ("POST /chat (valid)", test_chat_returns_required_fields),
         ("POST /chat (empty -> rejected)", test_empty_message_is_rejected),
         ("POST /rag/search", test_rag_search_returns_results),

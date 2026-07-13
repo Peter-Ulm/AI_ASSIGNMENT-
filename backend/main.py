@@ -4,17 +4,29 @@ FastAPI backend for the University Student Support Assistant.
 Pipeline:  frontend  ->  this API (/chat)  ->  llm_client  ->  local Ollama
 model, which can call the search_knowledge_base tool  ->  vector_store (FAISS).
 
+Every route except the /auth/* ones requires a logged-in user (a signed JWT
+in an httpOnly "access_token" cookie, set by /auth/signup and /auth/login).
+Chat history is owned by the server, one row per session/message in
+backend/data/app.db (db.py) - not the browser's localStorage.
+
 Endpoints:
     GET    /                     - service info and endpoint list
-    GET    /health               - liveness + whether the local model is reachable/installed
-    POST   /chat                 - send a conversation, get an answer (the main endpoint)
-    POST   /feedback             - record a Good/Average/Poor rating
-    POST   /rag/documents/text   - ingest pasted text into the knowledge base
-    POST   /rag/documents/file   - ingest an uploaded .txt/.md/.pdf file
-    GET    /rag/documents        - list ingested documents and chunk counts
-    DELETE /rag/documents/{src}  - remove a document from the knowledge base
-    POST   /rag/search           - search the knowledge base directly (no LLM)
-    GET    /rag/status           - knowledge base size and embedding model
+    GET    /health                - liveness + whether the local model is reachable/installed
+    POST   /auth/signup           - create an account, logs in
+    POST   /auth/login            - log in
+    POST   /auth/logout           - clear the session cookie
+    GET    /auth/me                - current user, or 401
+    POST   /chat                  - send a message, get an answer (the main endpoint)
+    GET    /chat/sessions          - list the caller's chat sessions
+    GET    /chat/sessions/{id}     - one session's full message history
+    DELETE /chat/sessions/{id}     - delete a chat session
+    POST   /feedback               - record a Good/Average/Poor rating
+    POST   /rag/documents/text     - ingest pasted text into the knowledge base
+    POST   /rag/documents/file     - ingest an uploaded .txt/.md/.pdf file
+    GET    /rag/documents          - list ingested documents and chunk counts
+    DELETE /rag/documents/{src}    - remove a document from the knowledge base
+    POST   /rag/search             - search the knowledge base directly (no LLM)
+    GET    /rag/status             - knowledge base size and embedding model
 
 Run:  uvicorn main:app --reload      (from the backend/ folder)
   or: python main.py
@@ -25,13 +37,16 @@ from __future__ import annotations
 import json
 import logging
 import re
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 
+import auth
+import db
 import ingestion
 import llm_client
 import vector_store
@@ -96,7 +111,7 @@ TOOLS = [
     }
 ]
 
-# How many recent turns to send back to the model, so follow-up questions
+# How many recent messages to send back to the model, so follow-up questions
 # ("what about the second one?") work without unbounded prompt growth.
 MAX_HISTORY_MESSAGES = 12
 
@@ -134,32 +149,71 @@ def _is_degenerate(content: str) -> bool:
 _LEADING_ROLE_TAG = re.compile(r"^(assistant|system|user)\s*\n+", re.IGNORECASE)
 
 
+def _make_title(content: str) -> str:
+    flat = re.sub(r"\s+", " ", content).strip()
+    return f"{flat[:40]}…" if len(flat) > 40 else flat
+
+
+# ── Auth models + cookie helper ──────────────────────────────────────────────
+_COOKIE_NAME = "access_token"
+
+
+class SignupRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    email: str = Field(..., min_length=3, max_length=254)
+    password: str = Field(..., min_length=8, max_length=128)
+
+    @field_validator("email")
+    @classmethod
+    def _valid_email(cls, value: str) -> str:
+        value = value.strip().lower()
+        if "@" not in value or "." not in value.split("@")[-1]:
+            raise ValueError("Enter a valid email address.")
+        return value
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class UserResponse(BaseModel):
+    id: str
+    name: str
+    email: str
+
+
+def _set_auth_cookie(response: Response, user_id: str) -> None:
+    response.set_cookie(
+        key=_COOKIE_NAME,
+        value=auth.create_access_token(user_id),
+        httponly=True,
+        secure=settings.COOKIE_SECURE,
+        samesite="lax",
+        max_age=settings.JWT_EXPIRE_DAYS * 24 * 60 * 60,
+    )
+
+
 # ── Request/response models ─────────────────────────────────────────────────
-class ChatMessage(BaseModel):
-    role: str
-    content: str
-
-
 class ChatRequest(BaseModel):
-    messages: list[ChatMessage]
+    session_id: str | None = None
+    message: str
     temperature: float = Field(
         default=settings.DEFAULT_TEMPERATURE, ge=0.0, le=1.0,
         description="Sampling temperature (0 = focused, 1 = creative).",
     )
 
-    @field_validator("messages")
+    @field_validator("message")
     @classmethod
-    def _valid_history(cls, value: list[ChatMessage]) -> list[ChatMessage]:
-        if not value:
-            raise ValueError("messages must not be empty.")
-        latest = value[-1].content.strip()
-        if not latest:
-            raise ValueError("The latest message must not be empty.")
-        if len(latest) > settings.MAX_QUESTION_CHARS:
+    def _valid_message(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("Message must not be empty.")
+        if len(stripped) > settings.MAX_QUESTION_CHARS:
             raise ValueError(
                 f"Message is too long (max {settings.MAX_QUESTION_CHARS} characters)."
             )
-        return value
+        return stripped
 
 
 class SearchResult(BaseModel):
@@ -170,6 +224,8 @@ class SearchResult(BaseModel):
 
 
 class ChatResponse(BaseModel):
+    session_id: str
+    title: str
     answer: str
     tokens_used: int
     generation_time: float
@@ -177,6 +233,30 @@ class ChatResponse(BaseModel):
     model: str
     used_kb: bool
     sources: list[SearchResult] = []
+
+
+class StoredMessage(BaseModel):
+    role: str
+    content: str
+    used_kb: bool = False
+    sources: list[SearchResult] = []
+    model: str | None = None
+    tokens_used: int | None = None
+    generation_time: float | None = None
+    is_error: bool = False
+
+
+class SessionSummary(BaseModel):
+    id: str
+    title: str
+    updated_at: str
+
+
+class SessionDetail(BaseModel):
+    id: str
+    title: str
+    updated_at: str
+    messages: list[StoredMessage]
 
 
 class HealthResponse(BaseModel):
@@ -225,15 +305,23 @@ class RagStatus(BaseModel):
 app = FastAPI(
     title="University Student Support Assistant",
     description="A self-hosted LLM chat app with FAISS-backed RAG (IS 365 assignment).",
-    version="2.0.0",
+    version="3.0.0",
 )
 
+# allow_origins must be an explicit list (not "*") when allow_credentials is
+# True - the auth cookie only round-trips if the browser trusts the origin.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[settings.FRONTEND_ORIGIN],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+def _init_database() -> None:
+    db.init_db()
 
 
 @app.on_event("startup")
@@ -261,7 +349,9 @@ def root() -> dict:
         "model": settings.OLLAMA_MODEL_NAME,
         "endpoints": {
             "health": "GET /health",
+            "auth": "POST /auth/signup, POST /auth/login, POST /auth/logout, GET /auth/me",
             "chat": "POST /chat",
+            "chat_sessions": "GET /chat/sessions, GET/DELETE /chat/sessions/{id}",
             "feedback": "POST /feedback",
             "rag_documents": "GET/POST /rag/documents, DELETE /rag/documents/{source}",
             "rag_search": "POST /rag/search",
@@ -286,14 +376,59 @@ def health() -> HealthResponse:
     )
 
 
+# ── Auth ─────────────────────────────────────────────────────────────────────
+@app.post("/auth/signup", response_model=UserResponse)
+def signup(request: SignupRequest, response: Response) -> UserResponse:
+    try:
+        user = db.create_user(request.email, request.name.strip(), auth.hash_password(request.password))
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=409, detail="An account with that email already exists.")
+    _set_auth_cookie(response, user["id"])
+    logger.info("New user signed up: %s", user["email"])
+    return UserResponse(**user)
+
+
+@app.post("/auth/login", response_model=UserResponse)
+def login(request: LoginRequest, response: Response) -> UserResponse:
+    user = db.get_user_by_email(request.email.strip().lower())
+    if not user or not auth.verify_password(request.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid email or password.")
+    _set_auth_cookie(response, user["id"])
+    return UserResponse(id=user["id"], name=user["name"], email=user["email"])
+
+
+@app.post("/auth/logout")
+def logout(response: Response) -> dict:
+    response.delete_cookie(_COOKIE_NAME)
+    return {"status": "logged_out"}
+
+
+@app.get("/auth/me", response_model=UserResponse)
+def me(user: sqlite3.Row = Depends(auth.get_current_user)) -> UserResponse:
+    return UserResponse(id=user["id"], name=user["name"], email=user["email"])
+
+
+# ── Chat ─────────────────────────────────────────────────────────────────────
 @app.post("/chat", response_model=ChatResponse)
-def chat(request: ChatRequest) -> ChatResponse:
+def chat(request: ChatRequest, user: sqlite3.Row = Depends(auth.get_current_user)) -> ChatResponse:
     """Answer a student's message, using the knowledge base as a tool when useful."""
-    history = request.messages[-MAX_HISTORY_MESSAGES:]
-    logger.info("Chat message received: %s", history[-1].content)
+    if request.session_id:
+        session = db.get_session(request.session_id, user["id"])
+        if not session:
+            raise HTTPException(status_code=404, detail="Chat session not found.")
+        title = session["title"]
+        history = db.list_messages(request.session_id)[-MAX_HISTORY_MESSAGES:]
+        session_id: str | None = session["id"]
+    else:
+        title = _make_title(request.message)
+        history = []
+        session_id = None  # created only after a successful answer, below
+
+    logger.info("Chat message received (session=%s): %s", session_id, request.message)
 
     messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
-    messages += [{"role": m.role, "content": m.content} for m in history]
+    messages += [{"role": m["role"], "content": m["content"]} for m in history]
+    messages.append({"role": "user", "content": request.message})
 
     tools = TOOLS if settings.USE_RAG else None
     used_kb = False
@@ -308,11 +443,20 @@ def chat(request: ChatRequest) -> ChatResponse:
             messages.append(result["message"])
             for call in tool_calls:
                 query = call.get("function", {}).get("arguments", {}).get("query", "")
-                # A single best-matching chunk per search, not several - this is
-                # what keeps answers focused. Returning the top few "loosely
-                # related" chunks made the model dutifully report on all of
-                # them, padding answers with facts the student didn't ask about.
-                hits = _filter_relevant(vector_store.search(query, k=1))
+                # Small models occasionally call the tool with a blank query for
+                # greeting-shaped messages that don't need a real search. Ollama's
+                # embedding endpoint returns an empty vector for an empty string
+                # (a 200, not an error), so skip the call entirely rather than
+                # let that surface as a failed answer.
+                if not query.strip():
+                    hits: list[dict] = []
+                else:
+                    # A single best-matching chunk per search, not several - this
+                    # is what keeps answers focused. Returning the top few
+                    # "loosely related" chunks made the model dutifully report
+                    # on all of them, padding answers with facts the student
+                    # didn't ask about.
+                    hits = _filter_relevant(vector_store.search(query, k=1))
                 for hit in hits:
                     key = (hit["source"], hit["heading"])
                     if key not in hits_by_key or hit["score"] > hits_by_key[key]["score"]:
@@ -328,7 +472,7 @@ def chat(request: ChatRequest) -> ChatResponse:
             # it; restating the question in a user turn does.
             messages.append({
                 "role": "user",
-                "content": f"Using the information above, answer this question: {history[-1].content}",
+                "content": f"Using the information above, answer this question: {request.message}",
             })
 
             # One follow-up call to let the model answer using the tool results.
@@ -355,26 +499,68 @@ def chat(request: ChatRequest) -> ChatResponse:
         raise HTTPException(status_code=502, detail="The model returned an empty answer.")
 
     source_refs = sorted(hits_by_key.values(), key=lambda h: h["score"], reverse=True)
+    sources = [SearchResult(**hit) for hit in source_refs]
+
+    # Only persist a session once we actually have an answer for it - a
+    # failed first message shouldn't leave an empty chat behind.
+    if session_id is None:
+        session_id = db.create_session(user["id"], title)["id"]
+
+    db.add_message(session_id, "user", request.message)
+    db.add_message(
+        session_id, "assistant", answer,
+        used_kb=used_kb, sources=[s.model_dump() for s in sources],
+        model=result["model"], tokens_used=result["tokens_used"],
+        generation_time=result["generation_time"],
+    )
+    db.touch_session(session_id, title=title)
 
     response = ChatResponse(
+        session_id=session_id,
+        title=title,
         answer=answer,
         tokens_used=result["tokens_used"],
         generation_time=result["generation_time"],
         timestamp=datetime.now(timezone.utc).isoformat(),
         model=result["model"],
         used_kb=used_kb,
-        sources=[SearchResult(**hit) for hit in source_refs],
+        sources=sources,
     )
     logger.info(
-        "Chat answer generated (model=%s, tokens=%s, %.2fs, used_kb=%s, sources=%d): %s",
-        response.model, response.tokens_used, response.generation_time,
+        "Chat answer generated (session=%s, model=%s, tokens=%s, %.2fs, used_kb=%s, sources=%d): %s",
+        session_id, response.model, response.tokens_used, response.generation_time,
         used_kb, len(response.sources), response.answer[:120].replace("\n", " "),
     )
     return response
 
 
+@app.get("/chat/sessions", response_model=list[SessionSummary])
+def list_chat_sessions(user: sqlite3.Row = Depends(auth.get_current_user)) -> list[SessionSummary]:
+    return [SessionSummary(**s) for s in db.list_sessions(user["id"])]
+
+
+@app.get("/chat/sessions/{session_id}", response_model=SessionDetail)
+def get_chat_session(session_id: str, user: sqlite3.Row = Depends(auth.get_current_user)) -> SessionDetail:
+    session = db.get_session(session_id, user["id"])
+    if not session:
+        raise HTTPException(status_code=404, detail="Chat session not found.")
+    return SessionDetail(
+        id=session["id"],
+        title=session["title"],
+        updated_at=session["updated_at"],
+        messages=db.list_messages(session_id),
+    )
+
+
+@app.delete("/chat/sessions/{session_id}")
+def delete_chat_session(session_id: str, user: sqlite3.Row = Depends(auth.get_current_user)) -> dict:
+    if not db.delete_session(session_id, user["id"]):
+        raise HTTPException(status_code=404, detail="Chat session not found.")
+    return {"status": "deleted", "session_id": session_id}
+
+
 @app.post("/feedback")
-def feedback(request: FeedbackRequest) -> dict:
+def feedback(request: FeedbackRequest, _user: sqlite3.Row = Depends(auth.get_current_user)) -> dict:
     """Record a user rating of an answer."""
     record = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -393,7 +579,9 @@ _ALLOWED_EXTENSIONS = {".txt", ".md", ".pdf"}
 
 
 @app.post("/rag/documents/text", response_model=RagDocument)
-def ingest_text_document(payload: IngestTextRequest) -> RagDocument:
+def ingest_text_document(
+    payload: IngestTextRequest, _user: sqlite3.Row = Depends(auth.get_current_user)
+) -> RagDocument:
     if not payload.text.strip():
         raise HTTPException(status_code=400, detail="Text must not be empty.")
     count = ingestion.ingest_text(payload.source, payload.text)
@@ -404,7 +592,9 @@ def ingest_text_document(payload: IngestTextRequest) -> RagDocument:
 
 
 @app.post("/rag/documents/file", response_model=RagDocument)
-async def ingest_file_document(file: UploadFile = File(...)) -> RagDocument:
+async def ingest_file_document(
+    file: UploadFile = File(...), _user: sqlite3.Row = Depends(auth.get_current_user)
+) -> RagDocument:
     extension = Path(file.filename or "").suffix.lower()
     if extension not in _ALLOWED_EXTENSIONS:
         raise HTTPException(
@@ -420,12 +610,12 @@ async def ingest_file_document(file: UploadFile = File(...)) -> RagDocument:
 
 
 @app.get("/rag/documents", response_model=list[RagDocument])
-def list_documents() -> list[RagDocument]:
+def list_documents(_user: sqlite3.Row = Depends(auth.get_current_user)) -> list[RagDocument]:
     return [RagDocument(**d) for d in vector_store.list_sources()]
 
 
 @app.delete("/rag/documents/{source}")
-def delete_document(source: str) -> dict:
+def delete_document(source: str, _user: sqlite3.Row = Depends(auth.get_current_user)) -> dict:
     removed = vector_store.delete_source(source)
     if removed == 0:
         raise HTTPException(status_code=404, detail=f"No document found for source '{source}'.")
@@ -434,14 +624,16 @@ def delete_document(source: str) -> dict:
 
 
 @app.post("/rag/search", response_model=list[SearchResult])
-def search_knowledge_base(payload: SearchRequest) -> list[SearchResult]:
+def search_knowledge_base(
+    payload: SearchRequest, _user: sqlite3.Row = Depends(auth.get_current_user)
+) -> list[SearchResult]:
     if not payload.query.strip():
         raise HTTPException(status_code=400, detail="Query must not be empty.")
     return [SearchResult(**hit) for hit in vector_store.search(payload.query, k=payload.k)]
 
 
 @app.get("/rag/status", response_model=RagStatus)
-def rag_status() -> RagStatus:
+def rag_status(_user: sqlite3.Row = Depends(auth.get_current_user)) -> RagStatus:
     return RagStatus(**vector_store.status())
 
 

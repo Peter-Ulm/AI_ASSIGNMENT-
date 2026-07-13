@@ -53,6 +53,10 @@ services:
       MAX_QUESTION_CHARS: ${MAX_QUESTION_CHARS:-1000}
       USE_RAG: ${USE_RAG:-true}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+      JWT_EXPIRE_DAYS: ${JWT_EXPIRE_DAYS:-7}
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:3000}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
     volumes:
       - ./backend:/app/backend
     ports:
